@@ -1,0 +1,37 @@
+/* Modern Dark Theme */
+QWidget {
+    background-color: #2D2D2D;
+    color: #F0F0F0;
+    font-family: "Segoe UI", sans-serif;
+}
+
+QPushButton {
+    background-color: #3A3A3A;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 5px;
+}
+
+QPushButton:hover {
+    background-color: #4A4A4A;
+}
+
+QPushButton:pressed {
+    background-color: #2A2A2A;
+}
+
+QTabWidget::pane {
+    border: 1px solid #444;
+    background: #2D2D2D;
+}
+
+QTabBar::tab {
+    background: #3A3A3A;
+    border: 1px solid #444;
+    padding: 8px;
+}
+
+QTabBar::tab:selected {
+    background: #4A4A4A;
+    border-bottom: 2px solid #6A9;
+}
