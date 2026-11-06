@@ -9,6 +9,12 @@ struct ImageEntry {
     name: String,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct PendingAction {
+    description: String,
+    args: Vec<String>,
+}
+
 fn main() {
     dioxus_desktop::launch(App);
 }
@@ -38,6 +44,31 @@ fn scan_images() -> Vec<ImageEntry> {
     found
 }
 
+fn request_action(
+    description: &str,
+    args: Vec<String>,
+    needs_confirmation: bool,
+    selected: String,
+    pending: Signal<Option<PendingAction>>,
+    status: Signal<String>,
+    logs: Signal<Vec<String>>,
+    busy: Signal<bool>,
+) {
+    if selected.is_empty() {
+        status.set("Choose a FlatImage first.".to_string());
+        return;
+    }
+    if !Path::new(&selected).is_file() {
+        status.set("The selected image no longer exists. Scan again or add its path.".to_string());
+        return;
+    }
+    if needs_confirmation {
+        pending.set(Some(PendingAction { description: description.to_string(), args }));
+    } else {
+        run_flatimage(selected, args, status, logs, busy);
+    }
+}
+
 fn run_flatimage(
     image: String,
     args: Vec<String>,
@@ -45,18 +76,15 @@ fn run_flatimage(
     logs: Signal<Vec<String>>,
     busy: Signal<bool>,
 ) {
-    if image.is_empty() {
-        status.set("Choose a FlatImage first.".to_string());
-        return;
-    }
     let label = if args.is_empty() { "Launch image".to_string() } else { args.join(" ") };
     status.set(format!("Running: {label}"));
     busy.set(true);
     spawn(async move {
         let result = if args.is_empty() {
-            Command::new(&image).spawn().map(|_| {
-                format!("Started {}. The app is running outside this manager.", image)
-            }).map_err(|error| error.to_string())
+            Command::new(&image)
+                .spawn()
+                .map(|_| format!("Started {}. The app is running outside this manager.", image))
+                .map_err(|error| format!("Could not launch image: {error}"))
         } else {
             match AsyncCommand::new(&image).args(&args).output().await {
                 Ok(output) => {
@@ -68,7 +96,7 @@ fn run_flatimage(
                         Err(format!("Command exited with {}.\n{}", output.status, text))
                     }
                 }
-                Err(error) => Err(format!("Could not run FlatImage: {error}")),
+                Err(error) => Err(format!("Could not run FlatImage command: {error}")),
             }
         };
         match result {
@@ -86,8 +114,8 @@ fn run_flatimage(
 }
 
 fn App() -> Element {
-    let mut images = use_signal(|| scan_images());
-    let mut selected = use_signal(|| String::new());
+    let mut images = use_signal(scan_images);
+    let mut selected = use_signal(String::new);
     let mut manual_path = use_signal(String::new);
     let mut permissions = use_signal(String::new);
     let mut env_vars = use_signal(String::new);
@@ -97,18 +125,21 @@ fn App() -> Element {
     let mut bind_target = use_signal(String::new);
     let mut bind_type = use_signal(|| "ro".to_string());
     let mut layer_path = use_signal(String::new);
+    let mut remote_url = use_signal(String::new);
+    let mut overlay = use_signal(|| "OVERLAYFS".to_string());
+    let pending = use_signal(|| None::<PendingAction>);
     let mut status = use_signal(|| "Choose a .flatimage file to get started.".to_string());
     let mut logs = use_signal(|| vec!["FlatImage Manager ready.".to_string()]);
     let busy = use_signal(|| false);
 
-    let current_image = selected();
+    let selected_path = selected();
     let selected_name = images().iter()
-        .find(|image| image.path == current_image)
+        .find(|image| image.path == selected_path)
         .map(|image| image.name.clone())
-        .unwrap_or_else(|| if current_image.is_empty() { "No image selected".into() } else { current_image.clone() });
+        .unwrap_or_else(|| if selected_path.is_empty() { "No image selected".into() } else { selected_path.clone() });
 
-    let run = move |args: Vec<String>| {
-        run_flatimage(selected(), args, status, logs, busy);
+    let request = move |description: &'static str, args: Vec<String>, confirm: bool| {
+        request_action(description, args, confirm, selected(), pending, status, logs, busy);
     };
 
     rsx! {
@@ -144,7 +175,7 @@ fn App() -> Element {
                         div { class: "empty",
                             div { class: "empty-icon", "＋" }
                             strong { "No images found yet" }
-                            p { "Use the field below to add a .flatimage file, or scan your current folder, Downloads, and Desktop." }
+                            p { "Scan common folders or add a .flatimage by path." }
                         }
                     }
                     for image in images() {
@@ -201,85 +232,85 @@ fn App() -> Element {
                         div {
                             div { class: "eyebrow", "SELECTED IMAGE" }
                             h2 { "{selected_name}" }
-                            p { "Actions below run FlatImage's own fim-* commands on this image. Results appear here—no shell command is constructed." }
+                            p { "Actions run FlatImage's documented fim-* commands directly as child processes. Results appear below; no shell is used." }
                         }
                         button {
                             class: "primary launch",
                             disabled: busy() || selected().is_empty(),
-                            onclick: move |_| run(Vec::new()),
+                            onclick: move |_| request("Launch image", Vec::new(), false),
                             if busy() { "Working…" } else { "▶  Launch" }
                         }
                     }
 
                     div { class: "feature-grid",
                         section { class: "card feature",
-                            div { class: "feature-title", span { class: "feature-icon amber", "◈" } div { h3 { "Permissions" } p { "Control what this image can access." } } }
+                            div { class: "feature-title", span { class: "feature-icon amber", "◈" } div { h3 { "Permissions" } p { "Choose what this image can access." } } }
                             div { class: "button-row",
-                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| run(vec!["fim-perms".into(), "list".into()]), "Show current" }
-                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| run(vec!["fim-perms".into(), "add".into(), "network".into()]), "Allow network" }
-                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| run(vec!["fim-perms".into(), "del".into(), "network".into()]), "Remove network" }
+                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| request("Show permissions", vec!["fim-perms".into(), "list".into()], false), "Show current" }
+                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| request("Allow network access", vec!["fim-perms".into(), "add".into(), "network".into()], false), "Allow network" }
+                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| request("Remove network access", vec!["fim-perms".into(), "del".into(), "network".into()], false), "Remove network" }
+                                button { class: "secondary danger", disabled: busy() || selected().is_empty(), onclick: move |_| request("Clear every permission and restore the most isolated setting", vec!["fim-perms".into(), "clear".into()], true), "Clear all" }
                             }
                             div { class: "inline-form",
                                 input { placeholder: "Permission names, comma-separated", value: "{permissions}", oninput: move |event| permissions.set(event.value()) }
                                 button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| {
                                     let value = permissions().trim().to_string();
-                                    if !value.is_empty() { run(vec!["fim-perms".into(), "add".into(), value]); }
+                                    if !value.is_empty() { request("Add permissions", vec!["fim-perms".into(), "add".into(), value], false); }
                                 }, "Add" }
                             }
-                            p { class: "hint", "Grant only permissions the app needs. Network access allows the image to connect to the internet." }
+                            p { class: "hint", "Known options include home, media, audio, wayland, xorg, dbus_user, usb, input, gpu, network, shm, and dev. Grant only what the app needs." }
                         }
 
                         section { class: "card feature",
                             div { class: "feature-title", span { class: "feature-icon violet", "⌘" } div { h3 { "Default startup" } p { "Choose what opens when you launch." } } }
                             div { class: "button-row",
-                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| run(vec!["fim-boot".into(), "show".into()]), "Show current" }
-                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| run(vec!["fim-boot".into(), "clear".into()]), "Reset to default" }
+                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| request("Show startup command", vec!["fim-boot".into(), "show".into()], false), "Show current" }
+                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| request("Reset startup command", vec!["fim-boot".into(), "clear".into()], true), "Reset to default" }
                             }
                             div { class: "inline-form",
-                                input { placeholder: "Program, e.g. firefox", value: "{boot_program}", oninput: move |event| boot_program.set(event.value()) }
+                                input { placeholder: "Program, for example firefox", value: "{boot_program}", oninput: move |event| boot_program.set(event.value()) }
                                 button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| {
                                     let value = boot_program().trim().to_string();
-                                    if !value.is_empty() { run(vec!["fim-boot".into(), "set".into(), value]); }
+                                    if !value.is_empty() { request("Set default startup program", vec!["fim-boot".into(), "set".into(), value], false); }
                                 }, "Save" }
                             }
                         }
 
                         section { class: "card feature",
-                            div { class: "feature-title", span { class: "feature-icon blue", "▤" } div { h3 { "Environment variables" } p { "Set values available to apps inside the image." } } }
+                            div { class: "feature-title", span { class: "feature-icon blue", "▤" } div { h3 { "Environment variables" } p { "Provide app settings inside the image." } } }
                             div { class: "button-row",
-                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| run(vec!["fim-env".into(), "list".into()]), "Show current" }
-                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| run(vec!["fim-env".into(), "clear".into()]), "Clear all" }
+                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| request("Show environment variables", vec!["fim-env".into(), "list".into()], false), "Show current" }
+                                button { class: "secondary danger", disabled: busy() || selected().is_empty(), onclick: move |_| request("Remove all saved environment variables", vec!["fim-env".into(), "clear".into()], true), "Clear all" }
                             }
                             div { class: "inline-form",
                                 input { placeholder: "NAME=value", value: "{env_vars}", oninput: move |event| env_vars.set(event.value()) }
                                 button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| {
                                     let value = env_vars().trim().to_string();
-                                    if value.contains('=') { run(vec!["fim-env".into(), "add".into(), value]); }
+                                    if value.contains('=') { request("Add environment variable", vec!["fim-env".into(), "add".into(), value], false); }
                                     else { status.set("Enter a variable as NAME=value.".to_string()); }
                                 }, "Add" }
                             }
                         }
 
                         section { class: "card feature",
-                            div { class: "feature-title", span { class: "feature-icon green", "▱" } div { h3 { "Layers" } p { "Manage changes and reusable filesystem layers." } } }
+                            div { class: "feature-title", span { class: "feature-icon green", "▱" } div { h3 { "Layers" } p { "Save changes or add reusable layers." } } }
                             div { class: "button-row",
-                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| run(vec!["fim-layer".into(), "list".into()]), "List layers" }
-                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| run(vec!["fim-layer".into(), "commit".into(), "layer".into()]), "Save as layer" }
-                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| run(vec!["fim-layer".into(), "commit".into(), "binary".into()]), "Save into image" }
+                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| request("List layers", vec!["fim-layer".into(), "list".into()], false), "List layers" }
+                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| request("Commit changes to a new managed layer", vec!["fim-layer".into(), "commit".into(), "layer".into()], true), "Save as layer" }
+                                button { class: "secondary danger", disabled: busy() || selected().is_empty(), onclick: move |_| request("Commit changes into the FlatImage executable", vec!["fim-layer".into(), "commit".into(), "binary".into()], true), "Save into image" }
                             }
                             div { class: "inline-form",
                                 input { placeholder: "Layer file path to add", value: "{layer_path}", oninput: move |event| layer_path.set(event.value()) }
                                 button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| {
                                     let value = layer_path().trim().to_string();
-                                    if !value.is_empty() { run(vec!["fim-layer".into(), "add".into(), value]); }
+                                    if !value.is_empty() { request("Add layer file", vec!["fim-layer".into(), "add".into(), value], true); }
                                 }, "Add layer" }
                             }
-                            p { class: "hint", "Saving into the image changes its contents. Make sure you want to keep those changes." }
                         }
 
                         section { class: "card feature",
                             div { class: "feature-title", span { class: "feature-icon cyan", "⇄" } div { h3 { "Folder bindings" } p { "Share a host folder with this image." } } }
-                            button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| run(vec!["fim-bind".into(), "list".into()]), "Show current bindings" }
+                            button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| request("List folder bindings", vec!["fim-bind".into(), "list".into()], false), "Show current bindings" }
                             div { class: "field-row",
                                 input { placeholder: "Host folder path", value: "{bind_source}", oninput: move |event| bind_source.set(event.value()) }
                                 input { placeholder: "Path inside image", value: "{bind_target}", oninput: move |event| bind_target.set(event.value()) }
@@ -288,50 +319,84 @@ fn App() -> Element {
                                 select { value: "{bind_type}", onchange: move |event| bind_type.set(event.value()),
                                     option { value: "ro", "Read only (safer)" }
                                     option { value: "rw", "Read and write" }
+                                    option { value: "dev", "Device" }
                                 }
                                 button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| {
                                     let source = bind_source().trim().to_string();
                                     let target = bind_target().trim().to_string();
                                     if source.is_empty() || target.is_empty() { status.set("Enter both folder paths first.".to_string()); }
-                                    else { run(vec!["fim-bind".into(), "add".into(), bind_type(), source, target]); }
+                                    else { request("Add host folder binding", vec!["fim-bind".into(), "add".into(), bind_type(), source, target], true); }
                                 }, "Add binding" }
                             }
-                            p { class: "hint", "Read-only is recommended unless the image needs to change files in the shared folder." }
+                            p { class: "hint", "Read-only is recommended unless the image needs to edit files in the shared folder." }
                         }
 
                         section { class: "card feature",
-                            div { class: "feature-title", span { class: "feature-icon pink", "✦" } div { h3 { "Package recipes" } p { "Install curated software sets." } } }
+                            div { class: "feature-title", span { class: "feature-icon pink", "✦" } div { h3 { "Package recipes" } p { "Look up and install curated software sets." } } }
                             div { class: "inline-form",
-                                input { placeholder: "Recipe name, e.g. gpu", value: "{recipe}", oninput: move |event| recipe.set(event.value()) }
+                                input { placeholder: "Recipe name, for example gpu", value: "{recipe}", oninput: move |event| recipe.set(event.value()) }
                                 button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| {
                                     let value = recipe().trim().to_string();
-                                    if !value.is_empty() { run(vec!["fim-recipe".into(), "info".into(), value]); }
+                                    if !value.is_empty() { request("Get recipe information", vec!["fim-recipe".into(), "info".into(), value], false); }
                                 }, "Recipe info" }
                             }
-                            button { class: "primary small", disabled: busy() || selected().is_empty(), onclick: move |_| {
-                                let value = recipe().trim().to_string();
-                                if !value.is_empty() { run(vec!["fim-recipe".into(), "install".into(), value]); }
-                            }, "Install recipe" }
-                            p { class: "hint", "Installing software changes the image and may download packages." }
+                            div { class: "button-row",
+                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| {
+                                    let value = recipe().trim().to_string();
+                                    if !value.is_empty() { request("Download recipe", vec!["fim-recipe".into(), "fetch".into(), value], true); }
+                                }, "Fetch" }
+                                button { class: "primary small", disabled: busy() || selected().is_empty(), onclick: move |_| {
+                                    let value = recipe().trim().to_string();
+                                    if !value.is_empty() { request("Install recipe and its dependencies", vec!["fim-recipe".into(), "install".into(), value], true); }
+                                }, "Install recipe" }
+                            }
+                            p { class: "hint", "Recipes may download and install software into this image." }
                         }
 
                         section { class: "card feature",
                             div { class: "feature-title", span { class: "feature-icon blue", "▣" } div { h3 { "Desktop integration" } p { "Add or remove app menu and file-type integration." } } }
-                            div { class: "button-row",
-                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| run(vec!["fim-desktop".into(), "enable".into(), "entry,mimetype,icon".into()]), "Enable integration" }
-                                button { class: "secondary danger", disabled: busy() || selected().is_empty(), onclick: move |_| run(vec!["fim-desktop".into(), "clean".into()]), "Remove integration" }
+                            div { class: "button-row wrap",
+                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| request("Enable menu entry, file type, and icon", vec!["fim-desktop".into(), "enable".into(), "entry,mimetype,icon".into()], false), "Enable all" }
+                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| request("Disable desktop integration", vec!["fim-desktop".into(), "enable".into(), "none".into()], false), "Disable" }
+                                button { class: "secondary danger", disabled: busy() || selected().is_empty(), onclick: move |_| request("Remove generated desktop integration files", vec!["fim-desktop".into(), "clean".into()], true), "Clean files" }
+                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| request("Preview desktop menu entry", vec!["fim-desktop".into(), "dump".into(), "entry".into()], false), "Preview entry" }
                             }
                         }
 
                         section { class: "card feature",
-                            div { class: "feature-title", span { class: "feature-icon amber", "⚙" } div { h3 { "Other settings" } p { "Filesystem, privacy, and running-instance tools." } } }
+                            div { class: "feature-title", span { class: "feature-icon amber", "⚙" } div { h3 { "Privacy & filesystem" } p { "Review isolation and filesystem settings." } } }
                             div { class: "button-row wrap",
-                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| run(vec!["fim-casefold".into(), "on".into()]), "Enable case-insensitive paths" }
-                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| run(vec!["fim-casefold".into(), "off".into()]), "Disable casefold" }
-                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| run(vec!["fim-overlay".into(), "show".into()]), "Show filesystem backend" }
-                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| run(vec!["fim-unshare".into(), "list".into()]), "Show isolation options" }
-                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| run(vec!["fim-instance".into(), "list".into()]), "Show running instances" }
-                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| run(vec!["fim-version".into(), "full".into()]), "Image version info" }
+                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| request("Enable case-insensitive paths", vec!["fim-casefold".into(), "on".into()], false), "Enable casefold" }
+                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| request("Disable case-insensitive paths", vec!["fim-casefold".into(), "off".into()], false), "Disable casefold" }
+                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| request("Show filesystem backend", vec!["fim-overlay".into(), "show".into()], false), "Show backend" }
+                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| request("Show isolation options", vec!["fim-unshare".into(), "list".into()], false), "Show isolation" }
+                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| request("Show running instances", vec!["fim-instance".into(), "list".into()], false), "Instances" }
+                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| request("Show image version information", vec!["fim-version".into(), "full".into()], false), "Version info" }
+                            }
+                            div { class: "field-row",
+                                select { value: "{overlay}", onchange: move |event| overlay.set(event.value()),
+                                    option { value: "BWRAP", "BWRAP (native)" }
+                                    option { value: "OVERLAYFS", "OverlayFS (fast)" }
+                                    option { value: "UNIONFS", "UnionFS (compatible)" }
+                                }
+                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| request("Change filesystem backend", vec!["fim-overlay".into(), "set".into(), overlay().to_lowercase()], true), "Apply backend" }
+                            }
+                        }
+
+                        section { class: "card feature",
+                            div { class: "feature-title", span { class: "feature-icon violet", "↗" } div { h3 { "Recipe remote" } p { "Configure where this image fetches recipes." } } }
+                            div { class: "button-row",
+                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| request("Show configured recipe remote", vec!["fim-remote".into(), "show".into()], false), "Show remote" }
+                                button { class: "secondary danger", disabled: busy() || selected().is_empty(), onclick: move |_| request("Clear configured recipe remote", vec!["fim-remote".into(), "clear".into()], true), "Clear remote" }
+                            }
+                            div { class: "inline-form",
+                                input { placeholder: "https://example.com/recipes", value: "{remote_url}", oninput: move |event| remote_url.set(event.value()) }
+                                button { class: "secondary", disabled: busy() || selected().is_empty(), onclick: move |_| {
+                                    let value = remote_url().trim().to_string();
+                                    if value.starts_with("https://") || value.starts_with("http://") {
+                                        request("Set recipe remote URL", vec!["fim-remote".into(), "set".into(), value], true);
+                                    } else { status.set("Enter a valid http:// or https:// remote URL.".to_string()); }
+                                }, "Save remote" }
                             }
                         }
                     }
@@ -343,14 +408,33 @@ fn App() -> Element {
                         }
                         p { class: "current-status", "{status()}" }
                         div { class: "log-list",
-                            for entry in logs().iter().rev().take(5).rev() {
+                            for entry in logs().iter().rev().take(6).rev() {
                                 pre { "{entry}" }
                             }
                         }
                     }
                 }
             }
-            footer { "FlatImage Manager • FlatImage commands run as child processes; this app does not use a shell." }
+            footer { "FlatImage Manager • Commands are passed as process arguments, never through a shell." }
+
+            if let Some(action) = pending() {
+                div { class: "modal-backdrop",
+                    section { class: "confirm card",
+                        div { class: "eyebrow", "PLEASE CONFIRM" }
+                        h2 { "{action.description}?" }
+                        p { "This action may change the selected FlatImage or download/install software. Review the action before continuing." }
+                        div { class: "command-preview", "{action.args.join(" ")}" }
+                        div { class: "button-row modal-buttons",
+                            button { class: "secondary", onclick: move |_| pending.set(None), "Cancel" }
+                            button { class: "primary", disabled: busy(), onclick: move |_| {
+                                let selected_image = selected();
+                                pending.set(None);
+                                run_flatimage(selected_image, action.args.clone(), status, logs, busy);
+                            }, "Confirm and continue" }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -379,6 +463,7 @@ button { border:0; } button:disabled { opacity:.5; cursor:not-allowed!important;
 .feature-icon { width:35px; height:35px; display:grid; place-items:center; border-radius:10px; font-size:17px; flex:none; } .amber { color:#fcd34d; background:#3a2e16; } .violet { color:#c4b5fd; background:#30244b; } .blue { color:#93c5fd; background:#1e3453; } .green { color:#86efac; background:#193b2b; } .cyan { color:#67e8f9; background:#153a43; } .pink { color:#f9a8d4; background:#42233a; }
 .button-row { display:flex; align-items:center; gap:7px; flex-wrap:wrap; margin:8px 0; } .button-row select { width:auto; flex:1; } .inline-form { display:flex; gap:7px; margin-top:9px; } .inline-form button { flex:none; } .field-row { display:grid; grid-template-columns:1fr 1fr; gap:7px; margin-top:10px; } .hint { margin:10px 0 0; color:#94a3b8; font-size:10px; line-height:1.5; } .danger { color:#fecaca; }
 .small { padding:8px 12px; } .activity { padding:16px; } .activity-header { display:flex; align-items:center; justify-content:space-between; gap:12px; } .activity-header h3 { margin:0 0 4px; font-size:14px; } .status-pill { padding:5px 9px; border-radius:999px; color:#86efac; background:#173626; font-size:10px; font-weight:800; } .status-pill.running { color:#fde68a; background:#3b2e13; } .current-status { margin:13px 0 8px; color:#bfdbfe; font-size:12px; } .log-list { max-height:190px; overflow:auto; } .log-list pre { margin:7px 0 0; padding:9px; white-space:pre-wrap; overflow-wrap:anywhere; border-radius:8px; background:#0b1220; color:#cbd5e1; font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace; }
+.modal-backdrop { position:fixed; z-index:20; inset:0; display:grid; place-items:center; padding:20px; background:#020617cc; } .confirm { width:min(480px,100%); padding:22px; box-shadow:0 24px 80px #0009; } .confirm h2 { margin:7px 0; font-size:19px; } .confirm p { color:#94a3b8; font-size:12px; line-height:1.6; } .command-preview { padding:10px; border-radius:8px; background:#0b1220; color:#cbd5e1; font:11px ui-monospace,SFMono-Regular,Consolas,monospace; overflow-wrap:anywhere; } .modal-buttons { justify-content:flex-end; margin-top:16px; }
 footer { padding:16px 3px 4px; color:#64748b; font-size:10px; text-align:center; }
 @media (max-width:950px) { .layout { grid-template-columns:1fr; } .sidebar { position:static; } .feature-grid { grid-template-columns:1fr; } }
 @media (max-width:600px) { .shell { padding:10px; } .topbar,.welcome { align-items:flex-start; flex-direction:column; } .field-row { grid-template-columns:1fr; } }
