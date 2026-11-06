@@ -1,30 +1,17 @@
 # flatimage-manager
 
-A Dioxus desktop manager for FlatImage images. The goal is to make common FlatImage tasks discoverable through a graphical interface instead of requiring users to remember CLI syntax.
+A Dioxus desktop manager for FlatImage images, designed to make common tasks accessible without memorizing CLI syntax.
 
-## Current status
+## Status
 
-This branch contains an early UI prototype. Its image entries and action buttons are placeholders: image discovery and execution of FlatImage commands are not implemented yet.
-
-## Planned GUI workflows
-
-- Find and select local `.flatimage` files
-- Launch an image
-- Configure permissions and environment variables
-- Set the default boot command
-- Manage layers, bindings, recipes, and desktop integration
-- Show operation status and output, with confirmation before consequential changes
+Early UI prototype. Local image discovery and real FlatImage command execution are not implemented yet; action buttons currently display status text only.
 
 ## Development
 
-Install Rust, then run:
+Install Rust and the system WebView dependencies required by Dioxus Desktop, then run:
 
 ```sh
 cargo run
 ```
 
-Dioxus desktop also requires the platform's WebView dependencies. Consult the Dioxus desktop setup guide for the operating system in use.
-
-## FlatImage command reference
-
-The GUI is intended to invoke FlatImage's documented commands as child processes, without constructing shell command strings. See the [FlatImage documentation](https://flatimage.github.io/docs) for supported operations and behavior.
+The planned GUI workflows include image discovery and launch, permissions, environment variables, boot commands, desktop integration, layers, bindings, recipes, and clear operation feedback. See the [FlatImage documentation](https://flatimage.github.io/docs) for supported operations.
